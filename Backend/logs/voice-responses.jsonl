@@ -1,0 +1,16 @@
+{"Timestamp":"2026-03-17T18:33:24.4692749Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\8f35db1b-889a-4bd3-a067-55a46d63c392.wav"}}
+{"Timestamp":"2026-03-17T18:35:14.6171738Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\36bc4881-afc3-488e-a8ac-daac2ef1a3dd.wav"}}
+{"Timestamp":"2026-03-17T18:35:57.6383795Z","Service":"Ollama","Response":{"Text":"Hello! How can I assist you today?","TextLength":34,"Model":"llama3"}}
+{"Timestamp":"2026-03-17T18:35:58.9613833Z","Service":"PiperTts","Response":{"InputTextLength":34,"AudioBytesLength":125716}}
+{"Timestamp":"2026-03-17T18:48:12.6653147Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\97f24de1-b119-4a8a-b7c2-4858cd14b8ac.wav"}}
+{"Timestamp":"2026-03-17T18:48:27.3176517Z","Service":"Ollama","Response":{"Text":"Hello! How can I assist you today?","TextLength":34,"Model":"llama3"}}
+{"Timestamp":"2026-03-17T18:48:28.3670912Z","Service":"PiperTts","Response":{"InputTextLength":34,"AudioBytesLength":119060}}
+{"Timestamp":"2026-03-17T18:49:21.3912044Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\3d255092-b525-45d9-a28b-6fc7e9bfd231.wav"}}
+{"Timestamp":"2026-03-17T18:49:25.4281599Z","Service":"Ollama","Response":{"Text":"Hello! How can I help you today?","TextLength":32,"Model":"llama3"}}
+{"Timestamp":"2026-03-17T18:49:26.336936Z","Service":"PiperTts","Response":{"InputTextLength":32,"AudioBytesLength":109332}}
+{"Timestamp":"2026-03-17T18:54:21.1822303Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\2784a560-9138-463a-bc3a-87bca2203c79.wav"}}
+{"Timestamp":"2026-03-17T18:54:25.0342223Z","Service":"Ollama","Response":{"Text":"Hi! How can I help you today?","TextLength":29,"Model":"llama3"}}
+{"Timestamp":"2026-03-17T18:54:25.9320063Z","Service":"PiperTts","Response":{"InputTextLength":29,"AudioBytesLength":109844}}
+{"Timestamp":"2026-03-17T19:04:05.6562047Z","Service":"Whisper","Response":{"Transcript":"Hello","TranscriptLength":5,"InputPath":"D:\\AI-toy\\Backend\\audio\\input\\91871a2c-ffe2-4228-ab59-0c70008fe299.wav"}}
+{"Timestamp":"2026-03-17T19:04:39.3537114Z","Service":"Ollama","Response":{"Text":"Hello! How can I assist you today?","TextLength":34,"Model":"llama3"}}
+{"Timestamp":"2026-03-17T19:04:42.6973205Z","Service":"PiperTts","Response":{"InputTextLength":34,"AudioBytesLength":113940}}

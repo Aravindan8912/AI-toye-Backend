@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Toy — Record 5s → WebSocket → Backend</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; margin-top: 12px; font-weight: 600; }
+    input[type="text"] { width: 100%; padding: 8px; margin-top: 4px; }
+    button { margin-top: 12px; padding: 12px 20px; font-size: 1rem; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 8px; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    #status { margin-top: 16px; padding: 12px; background: #f1f5f9; border-radius: 8px; min-height: 60px; white-space: pre-wrap; font-size: 0.9rem; }
+    .ok { color: #15803d; }
+    .err { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Record 5 sec → WebSocket → Backend</h1>
+  <p>Connect over WiFi: set backend URL to <code>ws://YOUR_PC_IP:5000/ws</code> (e.g. ws://192.168.1.10:5000/ws).</p>
+
+  <label for="wsUrl">WebSocket URL</label>
+  <input type="text" id="wsUrl" value="ws://localhost:5000/ws" placeholder="ws://localhost:5000/ws" />
+
+  <label for="duration">Record duration (seconds)</label>
+  <input type="number" id="duration" value="5" min="1" max="30" />
+
+  <div>
+    <button id="connectBtn">Connect</button>
+    <button id="recordBtn" disabled>Record 5 sec &amp; Send</button>
+  </div>
+
+  <div id="status">Ready. Enter URL and click Connect.</div>
+
+  <script>
+    const wsUrlEl = document.getElementById('wsUrl');
+    const durationEl = document.getElementById('duration');
+    const connectBtn = document.getElementById('connectBtn');
+    const recordBtn = document.getElementById('recordBtn');
+    const statusEl = document.getElementById('status');
+
+    let ws = null;
+
+    function setStatus(msg, isError = false) {
+      statusEl.textContent = msg;
+      statusEl.className = isError ? 'err' : 'ok';
+    }
+
+    connectBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        ws = null;
+        connectBtn.textContent = 'Connect';
+        recordBtn.disabled = true;
+        setStatus('Disconnected.');
+        return;
+      }
+      const url = wsUrlEl.value.trim();
+      if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+        setStatus('URL must start with ws:// or wss://', true);
+        return;
+      }
+      setStatus('Connecting…');
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        connectBtn.textContent = 'Disconnect';
+        recordBtn.disabled = false;
+        setStatus('Connected. Click "Record 5 sec & Send".');
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') setStatus('Server: ' + ev.data);
+        else setStatus('Received TTS audio: ' + ev.data.byteLength + ' bytes (binary).');
+      };
+      ws.onerror = () => setStatus('WebSocket error.', true);
+      ws.onclose = () => {
+        connectBtn.textContent = 'Connect';
+        recordBtn.disabled = true;
+        if (ws) setStatus('Connection closed.');
+        ws = null;
+      };
+    });
+
+    recordBtn.addEventListener('click', async () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus('Connect first.', true);
+        return;
+      }
+      const duration = Math.max(1, Math.min(30, parseInt(durationEl.value, 10) || 5));
+      setStatus('Recording ' + duration + ' sec… Allow microphone if prompted.');
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const chunks = [];
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        processor.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          const buf = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++)
+            buf[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
+          chunks.push(buf);
+        };
+
+        await new Promise(r => setTimeout(r, duration * 1000));
+        processor.disconnect();
+        source.disconnect();
+        stream.getTracks().forEach(t => t.stop());
+        await audioContext.close();
+
+        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+        const pcm = new Int16Array(totalLength);
+        let offset = 0;
+        for (const c of chunks) {
+          pcm.set(c, offset);
+          offset += c.length;
+        }
+
+        const wav = createWav(16000, 1, 16, pcm);
+        setStatus('Sending ' + (wav.byteLength / 1024).toFixed(1) + ' KB…');
+
+        const CHUNK = 4096;
+        for (let i = 0; i < wav.byteLength; i += CHUNK) {
+          const end = Math.min(i + CHUNK, wav.byteLength);
+          ws.send(wav.slice(i, end));
+        }
+        ws.send('EOR');
+        setStatus('Sent. Waiting for Piper TTS response… (check backend console)');
+      } catch (err) {
+        setStatus('Error: ' + err.message, true);
+      }
+    });
+
+    function createWav(sampleRate, numChannels, bitsPerSample, pcm) {
+      const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+      const dataSize = pcm.length * (bitsPerSample / 8);
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      const write = (offset, value, littleEndian = true) => {
+        if (value <= 0xff) view.setUint8(offset, value);
+        else if (value <= 0xffff) view.setUint16(offset, value, littleEndian);
+        else view.setUint32(offset, value, littleEndian);
+      };
+      let o = 0;
+      const str = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(o++, s.charCodeAt(i)); };
+      str('RIFF');
+      write(o, 36 + dataSize); o += 4;
+      str('WAVEfmt ');
+      write(o, 16); o += 4;
+      write(o, 1); o += 2;
+      write(o, numChannels); o += 2;
+      write(o, sampleRate); o += 4;
+      write(o, byteRate); o += 4;
+      write(o, numChannels * (bitsPerSample / 8)); o += 2;
+      write(o, bitsPerSample); o += 2;
+      str('data');
+      write(o, dataSize); o += 4;
+      const pcmView = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length);
+      for (let i = 0; i < pcmView.length; i++) view.setInt16(44 + i * 2, pcmView[i], true);
+      return new Uint8Array(buffer);
+    }
+  </script>
+</body>
+</html>
