@@ -8,6 +8,8 @@ using JarvisBackend.Workers;
 using Microsoft.Extensions.Options;
 using Serilog;
 
+using JarvisBackend.Data;
+
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
@@ -31,7 +33,10 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddControllers();
 
-// WebSocket → RabbitMQ → Worker (ws://localhost:5000/ws)
+
+// ================= EXISTING =================
+
+// WebSocket → RabbitMQ → Worker
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 builder.Services.AddSingleton<RabbitMqService>();
 builder.Services.AddSingleton<ConnectionManager>();
@@ -39,13 +44,34 @@ builder.Services.AddSingleton<AudioWebSocketHandler>();
 builder.Services.AddHostedService<AudioWorker>();
 
 builder.Services.AddSingleton<IWhisperService, WhisperService>();
+
 builder.Services.AddHttpClient<IOllamaService, OllamaService>((sp, client) =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
     client.BaseAddress = new Uri(config["Ollama:BaseUrl"] ?? "http://localhost:11434");
 });
+
 builder.Services.AddSingleton<ITtsService, PiperTtsService>();
 builder.Services.AddSingleton<IVoicePipelineLogger, VoicePipelineLogger>();
+
+
+// ================= 🔥 NEW: MEMORY + VECTOR =================
+
+// MongoDB
+builder.Services.AddSingleton<MongoService>();
+
+// Memory (vector search)
+builder.Services.AddSingleton<IMemoryService, MemoryService>();
+
+// Embedding (Ollama embeddings API)
+builder.Services.AddHttpClient<IEmbeddingService, EmbeddingService>((sp, client) =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    client.BaseAddress = new Uri(config["Ollama:BaseUrl"] ?? "http://localhost:11434");
+});
+
+
+// ================= BUILD =================
 
 var app = builder.Build();
 
@@ -57,39 +83,57 @@ app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSecond
 
 app.MapControllers();
 
-// Removed: /ws/stream no longer exists. Tell clients to use /ws.
+
+// ================= ROUTES =================
+
+// ❌ Deprecated endpoint
 app.Map("/ws/stream", async context =>
 {
     context.Response.StatusCode = 400;
     context.Response.ContentType = "text/plain";
-    await context.Response.WriteAsync("Use /ws instead. Connect to ws://host:5000/ws (not /ws/stream).");
+    await context.Response.WriteAsync("Use /ws instead. Connect to ws://host:5000/ws");
 });
 
-// WebSocket → RabbitMQ → Worker: ws://localhost:5000/ws
+// ✅ Main WebSocket
 app.Map("/ws", async context =>
 {
-    if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
-    var options = context.RequestServices.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = 400;
+        return;
+    }
+
+    var options = context.RequestServices
+        .GetRequiredService<IOptions<RabbitMqOptions>>().Value;
+
     if (!options.Enabled)
     {
         context.Response.StatusCode = 503;
-        await context.Response.WriteAsync("RabbitMQ pipeline is disabled. Set RabbitMQ:Enabled to true.");
+        await context.Response.WriteAsync("RabbitMQ disabled");
         return;
     }
+
     var socket = await context.WebSockets.AcceptWebSocketAsync();
     var handler = context.RequestServices.GetRequiredService<AudioWebSocketHandler>();
+
     await handler.HandleAsync(socket, context.RequestAborted);
 });
 
-// Ensure audio directories exist
+
+// ================= INIT =================
+
 var audioInput = Path.Combine(Directory.GetCurrentDirectory(), "audio", "input");
 var audioTts = Path.Combine(Directory.GetCurrentDirectory(), "audio", "tts");
+
 Directory.CreateDirectory(audioInput);
 Directory.CreateDirectory(audioTts);
 
+
+// ================= RUN =================
+
 try
 {
-    Log.Information("Starting JarvisBackend (WebSocket only)");
+    Log.Information("Starting JarvisBackend (Mongo + Vector Ready 🚀)");
     app.Run();
 }
 catch (Exception ex)

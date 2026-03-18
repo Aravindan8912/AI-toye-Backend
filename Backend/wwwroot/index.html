@@ -3,141 +3,522 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Toy — Record 5s → WebSocket → Backend</title>
+  <title>AI Chat — Hold mic to speak, hear reply</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 24px auto; padding: 0 16px; }
-    h1 { font-size: 1.25rem; }
-    label { display: block; margin-top: 12px; font-weight: 600; }
-    input[type="text"] { width: 100%; padding: 8px; margin-top: 4px; }
-    button { margin-top: 12px; padding: 12px 20px; font-size: 1rem; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 8px; }
-    button:hover { background: #1d4ed8; }
-    button:disabled { background: #94a3b8; cursor: not-allowed; }
-    #status { margin-top: 16px; padding: 12px; background: #f1f5f9; border-radius: 8px; min-height: 60px; white-space: pre-wrap; font-size: 0.9rem; }
-    .ok { color: #15803d; }
-    .err { color: #b91c1c; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      flex-shrink: 0;
+      padding: 12px 16px;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+    .header input {
+      flex: 1;
+      min-width: 140px;
+      padding: 8px 10px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.85rem;
+    }
+    .btn-wake {
+      padding: 8px 16px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+      color: white;
+    }
+    .btn-wake:hover:not(:disabled) { opacity: 0.95; }
+    .btn-wake:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-wake.connected { background: linear-gradient(135deg, #059669 0%, #10b981 100%); }
+    .chat-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .msg {
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 0.95rem;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #3b82f6;
+      color: white;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.ai {
+      align-self: flex-start;
+      background: #334155;
+      border: 1px solid #475569;
+      border-bottom-left-radius: 4px;
+    }
+    .msg.ai.playing { border-color: #22c55e; box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.3); }
+    .msg .meta { font-size: 0.75rem; opacity: 0.85; margin-top: 4px; }
+    .msg .tts-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .msg .tts-hint { font-size: 0.8rem; color: #94a3b8; }
+    .msg .audio-btn {
+      padding: 6px 12px; font-size: 0.8rem; cursor: pointer; border-radius: 8px;
+      background: #475569; color: #e2e8f0; border: none;
+    }
+    .msg .audio-btn:hover { background: #64748b; }
+    .msg .audio-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .chat-placeholder {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-size: 0.9rem;
+      text-align: center;
+      padding: 24px;
+    }
+    .footer {
+      flex-shrink: 0;
+      padding: 16px;
+      background: #1e293b;
+      border-top: 1px solid #334155;
+      text-align: center;
+    }
+    .mic-btn {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: #334155;
+      color: #94a3b8;
+      border: 3px solid #475569;
+      font-size: 1.6rem;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    .mic-btn:hover:not(:disabled) { background: #475569; color: #e2e8f0; }
+    .mic-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+    .mic-btn.recording { background: #dc2626; color: white; border-color: #ef4444; }
+    .footer .hint { font-size: 0.8rem; color: #64748b; margin-top: 8px; }
+    .mic-status {
+      padding: 8px 16px; font-size: 0.85rem; background: #1e293b; border-bottom: 1px solid #334155;
+      color: #94a3b8; min-height: 20px;
+    }
+    .mic-status.err { color: #fca5a5; background: #450a0a; }
+    .mic-status.ok { color: #86efac; }
   </style>
 </head>
 <body>
-  <h1>Record 5 sec → WebSocket → Backend</h1>
-  <p>Connect over WiFi: set backend URL to <code>ws://YOUR_PC_IP:5000/ws</code> (e.g. ws://192.168.1.10:5000/ws).</p>
+  <div class="header">
+    <h1>AI Chat</h1>
+    <input type="text" id="wsUrl" value="ws://localhost:5000/ws" placeholder="ws://localhost:5000/ws" />
+    <button type="button" id="wakeBtn" class="btn-wake">Wake up</button>
+  </div>
+  <div class="mic-status" id="micStatus" aria-live="polite"></div>
 
-  <label for="wsUrl">WebSocket URL</label>
-  <input type="text" id="wsUrl" value="ws://localhost:5000/ws" placeholder="ws://localhost:5000/ws" />
-
-  <label for="duration">Record duration (seconds)</label>
-  <input type="number" id="duration" value="5" min="1" max="30" />
-
-  <div>
-    <button id="connectBtn">Connect</button>
-    <button id="recordBtn" disabled>Record 5 sec &amp; Send</button>
+  <div class="chat-area" id="chatArea">
+    <div class="chat-placeholder" id="placeholder">Loading conversation from MongoDB…</div>
   </div>
 
-  <div id="status">Ready. Enter URL and click Connect.</div>
+  <div class="footer">
+    <button type="button" id="micBtn" class="mic-btn" disabled title="Hold to speak, release to send">🎤</button>
+    <p class="hint">Hold mic → speak → release to get AI reply</p>
+  </div>
 
   <script>
     const wsUrlEl = document.getElementById('wsUrl');
-    const durationEl = document.getElementById('duration');
-    const connectBtn = document.getElementById('connectBtn');
-    const recordBtn = document.getElementById('recordBtn');
-    const statusEl = document.getElementById('status');
+    const wakeBtn = document.getElementById('wakeBtn');
+    const micBtn = document.getElementById('micBtn');
+    const chatArea = document.getElementById('chatArea');
+    const placeholder = document.getElementById('placeholder');
+    const micStatusEl = document.getElementById('micStatus');
 
-    let ws = null;
-
-    function setStatus(msg, isError = false) {
-      statusEl.textContent = msg;
-      statusEl.className = isError ? 'err' : 'ok';
+    function setMicStatus(msg, isError) {
+      micStatusEl.textContent = msg || '';
+      micStatusEl.className = 'mic-status' + (isError ? ' err' : (msg ? ' ok' : ''));
     }
 
-    connectBtn.addEventListener('click', () => {
+    let ws = null;
+    let mediaStream = null;
+    let audioContext = null;
+    let processor = null;
+    let source = null;
+    let recordingChunks = [];
+    let recordedSampleRate = 0;
+    let nextTtsSampleRate = 22050; // Piper default; backend sends actual rate in JSON
+    let lastAiBubble = null;
+    let lastUserBubble = null;
+    const audioStore = new Map(); // msgId -> { pcm: Uint8Array, sampleRate: number }
+
+    function getApiBase() {
+      const ws = wsUrlEl.value.trim();
+      if (ws.startsWith('wss://')) return ws.replace(/\/ws.*$/, '').replace(/^wss:/, 'https:');
+      return ws.replace(/\/ws.*$/, '').replace(/^ws:/, 'http:');
+    }
+
+    function hidePlaceholder() {
+      if (placeholder.parentNode) placeholder.style.display = 'none';
+    }
+
+    function appendUserBubble(text, fromHistory) {
+      hidePlaceholder();
+      const div = document.createElement('div');
+      div.className = 'msg user';
+      div.textContent = text || (fromHistory ? '' : '…');
+      if (!div.textContent) div.textContent = '(no speech detected)';
+      chatArea.appendChild(div);
+      chatArea.scrollTop = chatArea.scrollHeight;
+      lastUserBubble = div;
+      return div;
+    }
+
+    function updateLastUserBubble(text) {
+      if (lastUserBubble) lastUserBubble.textContent = text || '(no speech detected)';
+    }
+
+    function appendAiBubble(botText, fromHistory) {
+      hidePlaceholder();
+      const msgId = 'ai-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      const div = document.createElement('div');
+      div.className = 'msg ai';
+      div.dataset.msgId = msgId;
+      div.innerHTML = (botText || '').replace(/\n/g, '<br>') + (fromHistory ? '' : '<div class="tts-row"><span class="tts-hint">🔊 Playing…</span></div>');
+      chatArea.appendChild(div);
+      chatArea.scrollTop = chatArea.scrollHeight;
+      lastAiBubble = div;
+      return div;
+    }
+
+    function addPlayAgainButton(bubble, pcmBytes, sampleRate) {
+      const msgId = bubble.dataset.msgId;
+      if (!msgId) return;
+      const pcmCopy = new Uint8Array(pcmBytes.length);
+      pcmCopy.set(pcmBytes);
+      audioStore.set(msgId, { pcm: pcmCopy, sampleRate });
+      const row = bubble.querySelector('.tts-row');
+      if (!row) return;
+      const hint = bubble.querySelector('.tts-hint');
+      if (hint) hint.textContent = '';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'audio-btn';
+      btn.textContent = '🔊 Hear again';
+      btn.addEventListener('click', () => {
+        const stored = audioStore.get(msgId);
+        if (stored) playStoredAudio(stored.pcm, stored.sampleRate, btn);
+      });
+      row.appendChild(btn);
+    }
+
+    function setAiPlaying(playing) {
+      if (lastAiBubble) {
+        const hint = lastAiBubble.querySelector('.tts-hint');
+        if (hint) hint.textContent = playing ? '🔊 Playing…' : '';
+        lastAiBubble.classList.toggle('playing', playing);
+      }
+    }
+
+    function setWakeState(connected) {
+      wakeBtn.textContent = connected ? 'Connected' : 'Wake up';
+      wakeBtn.classList.toggle('connected', connected);
+      micBtn.disabled = !connected;
+    }
+
+    wakeBtn.addEventListener('click', () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
         ws = null;
-        connectBtn.textContent = 'Connect';
-        recordBtn.disabled = true;
-        setStatus('Disconnected.');
+        setWakeState(false);
         return;
       }
       const url = wsUrlEl.value.trim();
-      if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-        setStatus('URL must start with ws:// or wss://', true);
-        return;
-      }
-      setStatus('Connecting…');
+      if (!url.startsWith('ws://') && !url.startsWith('wss://')) return;
       ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
-      ws.onopen = () => {
-        connectBtn.textContent = 'Disconnect';
-        recordBtn.disabled = false;
-        setStatus('Connected. Click "Record 5 sec & Send".');
-      };
+      ws.onopen = () => { setWakeState(true); setMicStatus(''); };
       ws.onmessage = (ev) => {
-        if (typeof ev.data === 'string') setStatus('Server: ' + ev.data);
-        else setStatus('Received TTS audio: ' + ev.data.byteLength + ' bytes (binary).');
+        if (typeof ev.data === 'string') {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.userText !== undefined && data.botText !== undefined) {
+              updateLastUserBubble(data.userText);
+              appendAiBubble(data.botText || '', false);
+              nextTtsSampleRate = (data.ttsSampleRate > 0 && data.ttsSampleRate <= 48000) ? data.ttsSampleRate : 22050;
+              return;
+            }
+          } catch (_) {}
+          return;
+        }
+        const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data;
+        if (buf.byteLength === 0) return;
+        setAiPlaying(true);
+        if (lastAiBubble) addPlayAgainButton(lastAiBubble, buf, nextTtsSampleRate);
+        playPcm16(buf, nextTtsSampleRate);
       };
-      ws.onerror = () => setStatus('WebSocket error.', true);
+      ws.onerror = () => {};
       ws.onclose = () => {
-        connectBtn.textContent = 'Connect';
-        recordBtn.disabled = true;
-        if (ws) setStatus('Connection closed.');
+        setWakeState(false);
         ws = null;
       };
     });
 
-    recordBtn.addEventListener('click', async () => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStatus('Connect first.', true);
+    async function loadHistory() {
+      try {
+        const base = getApiBase();
+        const res = await fetch(base + '/api/chat/history?limit=50');
+        if (!res.ok) throw new Error(res.statusText);
+        const items = await res.json();
+        if (items && items.length > 0) {
+          placeholder.style.display = 'none';
+          items.forEach(function (item) {
+            appendUserBubble(item.userText || '', true);
+            appendAiBubble(item.botText || '', true);
+          });
+          chatArea.scrollTop = chatArea.scrollHeight;
+        } else {
+          placeholder.textContent = 'Wake up to connect, then hold the mic to speak. Your words and the AI reply are saved to MongoDB and shown here.';
+        }
+      } catch (e) {
+        placeholder.textContent = 'Wake up to connect, then hold the mic to speak. Release to send and hear the reply. (History: ' + (e.message || 'load failed') + ')';
+      }
+    }
+    loadHistory();
+
+    function startRecording() {
+      recordingChunks = [];
+      setMicStatus('');
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setMicStatus('Microphone not supported in this browser.', true);
         return;
       }
-      const duration = Math.max(1, Math.min(30, parseInt(durationEl.value, 10) || 5));
-      setStatus('Recording ' + duration + ' sec… Allow microphone if prompted.');
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => {
+          mediaStream = stream;
+          audioContext = new AudioContext();
+          recordedSampleRate = audioContext.sampleRate;
+          source = audioContext.createMediaStreamSource(stream);
+          processor = audioContext.createScriptProcessor(4096, 1, 1);
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+          processor.onaudioprocess = (e) => {
+            const input = e.inputBuffer.getChannelData(0);
+            const buf = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++)
+              buf[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
+            recordingChunks.push(buf);
+          };
+          setMicStatus('Mic on — speak now, then release.');
+        })
+        .catch((err) => {
+          stopRecordingState();
+          var msg = 'Mic error: ';
+          if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            msg += 'Permission denied. Allow microphone in browser (click the lock or site settings) and refresh.';
+          } else if (err.name === 'NotFoundError') {
+            msg += 'No microphone found. Connect a mic and try again.';
+          } else {
+            msg += (err.message || err.name || 'Unknown error');
+          }
+          setMicStatus(msg, true);
+        });
+    }
 
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const audioContext = new AudioContext({ sampleRate: 16000 });
-        const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        const chunks = [];
+    function stopRecordingAndSend() {
+      if (!processor || !source || !mediaStream) return;
+      processor.disconnect();
+      source.disconnect();
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+      if (audioContext) audioContext.close();
+      processor = null;
+      source = null;
+      const capturedRate = recordedSampleRate;
+      audioContext = null;
+      recordedSampleRate = 0;
 
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+      const totalLength = recordingChunks.reduce((acc, c) => acc + c.length, 0);
+      const pcmAtCaptureRate = new Int16Array(totalLength);
+      let offset = 0;
+      for (const c of recordingChunks) {
+        pcmAtCaptureRate.set(c, offset);
+        offset += c.length;
+      }
+      recordingChunks = [];
 
-        processor.onaudioprocess = (e) => {
-          const input = e.inputBuffer.getChannelData(0);
-          const buf = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++)
-            buf[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
-          chunks.push(buf);
-        };
+      const TARGET_SR = 16000;
+      const pcm = capturedRate > 0 && capturedRate !== TARGET_SR
+        ? resample16(pcmAtCaptureRate, capturedRate, TARGET_SR)
+        : pcmAtCaptureRate;
 
-        await new Promise(r => setTimeout(r, duration * 1000));
+      const wav = createWav(TARGET_SR, 1, 16, pcm);
+      appendUserBubble('…');
+
+      const CHUNK = 4096;
+      for (let i = 0; i < wav.byteLength; i += CHUNK) {
+        const end = Math.min(i + CHUNK, wav.byteLength);
+        ws.send(wav.slice(i, end));
+      }
+      ws.send('EOR');
+    }
+
+    function stopRecordingState() {
+      if (processor && source && mediaStream) {
         processor.disconnect();
         source.disconnect();
-        stream.getTracks().forEach(t => t.stop());
-        await audioContext.close();
+        mediaStream.getTracks().forEach(t => t.stop());
+        if (audioContext) audioContext.close();
+      }
+      mediaStream = null;
+      processor = null;
+      source = null;
+      audioContext = null;
+      recordingChunks = [];
+      recordedSampleRate = 0;
+    }
 
-        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-        const pcm = new Int16Array(totalLength);
-        let offset = 0;
-        for (const c of chunks) {
-          pcm.set(c, offset);
-          offset += c.length;
-        }
-
-        const wav = createWav(16000, 1, 16, pcm);
-        setStatus('Sending ' + (wav.byteLength / 1024).toFixed(1) + ' KB…');
-
-        const CHUNK = 4096;
-        for (let i = 0; i < wav.byteLength; i += CHUNK) {
-          const end = Math.min(i + CHUNK, wav.byteLength);
-          ws.send(wav.slice(i, end));
-        }
-        ws.send('EOR');
-        setStatus('Sent. Waiting for Piper TTS response… (check backend console)');
-      } catch (err) {
-        setStatus('Error: ' + err.message, true);
+    micBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (micBtn.disabled || !ws || ws.readyState !== WebSocket.OPEN) return;
+      micBtn.classList.add('recording');
+      startRecording();
+    });
+    micBtn.addEventListener('mouseup', () => {
+      if (!micBtn.classList.contains('recording')) return;
+      micBtn.classList.remove('recording');
+      if (ws && ws.readyState === WebSocket.OPEN && recordingChunks.length > 0) {
+        setMicStatus('');
+        stopRecordingAndSend();
+      } else {
+        if (recordingChunks.length === 0)
+          setMicStatus('No audio captured. Allow microphone access, then hold the mic button for 1–2 seconds while speaking.', true);
+        else
+          setMicStatus('');
+        stopRecordingState();
       }
     });
+    micBtn.addEventListener('mouseleave', () => {
+      if (micBtn.classList.contains('recording')) {
+        micBtn.classList.remove('recording');
+        if (ws && ws.readyState === WebSocket.OPEN && recordingChunks.length > 0) {
+          setMicStatus('');
+          stopRecordingAndSend();
+        } else {
+          if (recordingChunks.length === 0)
+            setMicStatus('No audio captured. Hold the mic button longer while speaking.', true);
+          else
+            setMicStatus('');
+          stopRecordingState();
+        }
+      }
+    });
+    micBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (micBtn.disabled || !ws || ws.readyState !== WebSocket.OPEN) return;
+      micBtn.classList.add('recording');
+      startRecording();
+    });
+    micBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      if (micBtn.classList.contains('recording')) {
+        micBtn.classList.remove('recording');
+        if (ws && ws.readyState === WebSocket.OPEN && recordingChunks.length > 0) {
+          setMicStatus('');
+          stopRecordingAndSend();
+        } else {
+          if (recordingChunks.length === 0)
+            setMicStatus('No audio captured. Allow mic and hold the button 1–2 sec while speaking.', true);
+          else
+            setMicStatus('');
+          stopRecordingState();
+        }
+      }
+    });
+
+    function playPcm16(pcmBytes, sampleRate) {
+      const numSamples = pcmBytes.length / 2;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+      const buf = ctx.createBuffer(1, numSamples, sampleRate);
+      const ch = buf.getChannelData(0);
+      const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+      for (let i = 0; i < numSamples; i++) ch[i] = view.getInt16(i * 2, true) / 32768;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.onended = () => {
+        ctx.close();
+        setAiPlaying(false);
+        if (lastAiBubble) {
+          const hint = lastAiBubble.querySelector('.tts-hint');
+          if (hint) hint.textContent = '';
+        }
+      };
+      if (ctx.state === 'suspended') ctx.resume().then(() => src.start(0));
+      else src.start(0);
+    }
+
+    function playStoredAudio(pcmBytes, sampleRate, buttonEl) {
+      if (!buttonEl || !pcmBytes || !pcmBytes.length) return;
+      const origText = buttonEl.textContent;
+      buttonEl.textContent = '…';
+      buttonEl.disabled = true;
+      const numSamples = pcmBytes.length / 2;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+      const buf = ctx.createBuffer(1, numSamples, sampleRate);
+      const ch = buf.getChannelData(0);
+      const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+      for (let i = 0; i < numSamples; i++) ch[i] = view.getInt16(i * 2, true) / 32768;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.onended = () => {
+        ctx.close();
+        buttonEl.textContent = origText;
+        buttonEl.disabled = false;
+      };
+      if (ctx.state === 'suspended') ctx.resume().then(() => src.start(0));
+      else src.start(0);
+    }
+
+    function resample16(pcmInt16, fromHz, toHz) {
+      if (fromHz === toHz) return pcmInt16;
+      const inLen = pcmInt16.length;
+      const outLen = Math.floor(inLen * toHz / fromHz);
+      const out = new Int16Array(outLen);
+      const ratio = fromHz / toHz;
+      for (let i = 0; i < outLen; i++) {
+        const srcIdx = i * ratio;
+        const i0 = Math.floor(srcIdx);
+        const i1 = Math.min(i0 + 1, inLen - 1);
+        const frac = srcIdx - i0;
+        const s0 = pcmInt16[i0];
+        const s1 = pcmInt16[i1];
+        const v = s0 + frac * (s1 - s0);
+        out[i] = Math.max(-32768, Math.min(32767, Math.round(v)));
+      }
+      return out;
+    }
 
     function createWav(sampleRate, numChannels, bitsPerSample, pcm) {
       const byteRate = sampleRate * numChannels * (bitsPerSample / 8);

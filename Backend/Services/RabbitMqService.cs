@@ -64,9 +64,16 @@ public class RabbitMqService
     /// <summary>Publish an audio message to the configured queue (WebSocket handler calls this).</summary>
     public void Publish(AudioMessage message)
     {
+        if (message == null)
+        {
+            _logger?.LogWarning("RabbitMQ Publish called with null message.");
+            return;
+        }
+        var audioBytes = message.AudioData?.Length ?? 0;
         EnsureConnected();
         var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
         _channel!.BasicPublish(exchange: "", routingKey: _options.QueueName, body: body);
+        _logger?.LogInformation("RabbitMQ: message published to {QueueName}, bodySize={BodySize}, audioBytes={AudioBytes}", _options.QueueName, body.Length, audioBytes);
     }
 
     /// <summary>Returns the channel for consuming, or null if RabbitMQ is not available or disabled.</summary>

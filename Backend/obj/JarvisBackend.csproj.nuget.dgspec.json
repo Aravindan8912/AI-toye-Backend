@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\AI-toy\\Backend\\JarvisBackend.csproj": {}
+    "D:\\Project\\Backend\\JarvisBackend.csproj": {}
   },
   "projects": {
-    "D:\\AI-toy\\Backend\\JarvisBackend.csproj": {
+    "D:\\Project\\Backend\\JarvisBackend.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\AI-toy\\Backend\\JarvisBackend.csproj",
+        "projectUniqueName": "D:\\Project\\Backend\\JarvisBackend.csproj",
         "projectName": "JarvisBackend",
-        "projectPath": "D:\\AI-toy\\Backend\\JarvisBackend.csproj",
+        "projectPath": "D:\\Project\\Backend\\JarvisBackend.csproj",
         "packagesPath": "C:\\Users\\Aravinth\\.nuget\\packages\\",
-        "outputPath": "D:\\AI-toy\\Backend\\obj\\",
+        "outputPath": "D:\\Project\\Backend\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\Aravinth\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -44,6 +44,10 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "dependencies": {
+            "MongoDB.Driver": {
+              "target": "Package",
+              "version": "[3.7.0, )"
+            },
             "RabbitMQ.Client": {
               "target": "Package",
               "version": "[6.8.1, )"
