@@ -26,6 +26,7 @@ public class AudioWebSocketHandler
     {
         var clientId = Guid.NewGuid().ToString();
         _manager.Add(clientId, socket);
+        _logger.LogInformation("[WS] Client connected. ClientId={ClientId}", clientId);
 
         await socket.SendAsync(
             Encoding.UTF8.GetBytes("Connected. ClientId: " + clientId + ". Send binary (audio) chunks, then text 'EOR' to process."),
@@ -69,14 +70,29 @@ public class AudioWebSocketHandler
                     var text = Encoding.UTF8.GetString(buffer.AsSpan(0, result.Count)).Trim();
                     if (text.Equals(EndOfRecordingSignal, StringComparison.OrdinalIgnoreCase))
                     {
+                        _logger.LogInformation("[WS] EOR received. ClientId={ClientId}, AudioBufferBytes={Bytes}", clientId, audioBuffer.Count);
                         if (audioBuffer.Count > 0)
                         {
-                            _rabbit.Publish(new AudioMessage
+                            var payload = audioBuffer.ToArray();
+                            _logger.LogInformation("[WS] About to publish to RabbitMQ. ClientId={ClientId}, PayloadBytes={Bytes}", clientId, payload.Length);
+                            try
                             {
-                                ClientId = clientId,
-                                AudioData = audioBuffer.ToArray()
-                            });
+                                _rabbit.Publish(new AudioMessage
+                                {
+                                    ClientId = clientId,
+                                    AudioData = payload
+                                });
+                                _logger.LogInformation("[WS] Published to queue. ClientId={ClientId}", clientId);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "[WS] RabbitMQ Publish failed. ClientId={ClientId}", clientId);
+                            }
                             audioBuffer.Clear();
+                        }
+                        else
+                        {
+                            _logger.LogWarning("[WS] EOR but no audio in buffer (AudioBufferBytes=0). ClientId={ClientId}", clientId);
                         }
                         continue;
                     }
@@ -85,8 +101,11 @@ public class AudioWebSocketHandler
 
                 if (result.MessageType == WebSocketMessageType.Binary && result.Count > 0)
                 {
+                    var wasEmpty = audioBuffer.Count == 0;
                     for (int i = 0; i < result.Count; i++)
                         audioBuffer.Add(buffer[i]);
+                    if (wasEmpty)
+                        _logger.LogInformation("[WS] Audio received (first chunk). ClientId={ClientId}, ChunkBytes={Bytes}", clientId, result.Count);
                 }
             }
         }

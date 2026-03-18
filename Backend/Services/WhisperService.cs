@@ -29,8 +29,9 @@ public class WhisperService : IWhisperService
         var command = $"{python} \"{scriptPath}\" \"{absoluteAudioPath}\"";
 
         var result = await ProcessHelper.RunProcess(command);
+        // Full Whisper output — no truncation; stored as userText in MongoDB
         var text = result.Trim();
-        _logger.LogInformation("Whisper: done, result length {Length}", text.Length);
+        _logger.LogInformation("Whisper: done, result length {Length}, text: {Preview}", text.Length, text.Length > 0 ? (text.Length > 80 ? text.Substring(0, 80) + "…" : text) : "(empty)");
         return text;
     }
 }
