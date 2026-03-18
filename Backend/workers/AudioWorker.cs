@@ -25,6 +25,8 @@ public class AudioWorker : BackgroundService
     private readonly ITtsService _tts;
     private readonly IEmbeddingService _embed;
     private readonly IMemoryService _memory;
+    private readonly IKnowledgeService _knowledge;
+    private readonly IConfiguration _config;
     private readonly ConnectionManager _manager;
     private readonly ILogger<AudioWorker> _logger;
 
@@ -35,6 +37,8 @@ public class AudioWorker : BackgroundService
         ITtsService tts,
         IEmbeddingService embed,
         IMemoryService memory,
+        IKnowledgeService knowledge,
+        IConfiguration config,
         ConnectionManager manager,
         ILogger<AudioWorker> logger)
     {
@@ -44,6 +48,8 @@ public class AudioWorker : BackgroundService
         _tts = tts;
         _embed = embed;
         _memory = memory;
+        _knowledge = knowledge;
+        _config = config;
         _manager = manager;
         _logger = logger;
     }
@@ -140,38 +146,56 @@ public class AudioWorker : BackgroundService
 
     private async Task ProcessOneAsync(string path, string clientId, CancellationToken stoppingToken)
     {
-        var text = await _whisper.TranscribeAsync(path);
-        _logger.LogInformation("[Pipeline] STT: {Text}", string.IsNullOrWhiteSpace(text) ? "(empty)" : text);
-
+        // Skip Whisper for very small files (fragments); still send a short TTS reply
+        var fileLen = new FileInfo(path).Length;
+        const long minPayloadBytes = 32000; // ~1 sec at 16 kHz 16-bit
+        string text;
         string reply;
-        if (string.IsNullOrWhiteSpace(text))
+        if (fileLen < minPayloadBytes)
         {
-            reply = "I couldn't hear you properly, please say again.";
+            _logger.LogInformation("[Pipeline] Audio too short ({Bytes} bytes). Skipping Whisper/LLM/DB.", fileLen);
+            text = "";
+            reply = "Recording too short. Please speak for at least a second.";
         }
         else
         {
-            var embedding = await _embed.GetEmbedding(text);
-            var memories = await _memory.Search(embedding);
-            var context = string.Join("\n", memories.Select(m => $"User: {m.UserText}\nBot: {m.BotText}"));
-            var prompt = $@"
-You are a helpful AI assistant. Keep answers short.
-
-Context:
-{context}
-
-User: {text}
-";
-            reply = await _ollama.GenerateAsync(prompt) ?? "";
-            _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
-
-            await _memory.Save(new ChatMemory
+            text = await _whisper.TranscribeAsync(path);
+            _logger.LogInformation("[Pipeline] STT (Whisper): {Text}", string.IsNullOrWhiteSpace(text) ? "(empty)" : text);
+            if (string.IsNullOrWhiteSpace(text))
+                reply = "I couldn't hear you properly, please say again.";
+            else
             {
-                Id = Guid.NewGuid().ToString(),
-                UserText = text,
-                BotText = reply,
-                Embedding = embedding,
-                Timestamp = DateTime.UtcNow
-            });
+                // Vector: embed user text, search memory + knowledge for context
+                var embedding = await _embed.GetEmbedding(text);
+                var memories = await _memory.Search(embedding);
+                var knowledgeChunks = await _knowledge.SearchAsync(embedding);
+                var memoryContext = string.Join("\n", memories.Select(m => $"User: {m.UserText}\nBot: {m.BotText}"));
+                var knowledgeContext = knowledgeChunks.Count > 0
+                    ? string.Join("\n\n", knowledgeChunks.Select(k => $"[{k.Title}]\n{k.Content}"))
+                    : "";
+                var persona = _config["Assistant:Persona"] ?? "";
+                var userProfile = _config["Assistant:UserProfile"] ?? "";
+                var systemBlock = (string.IsNullOrWhiteSpace(persona) && string.IsNullOrWhiteSpace(userProfile))
+                    ? ""
+                    : string.Join("\n\n", new[] { persona, userProfile }.Where(s => !string.IsNullOrWhiteSpace(s))) + "\n\n";
+                var prompt = $@"{systemBlock}Keep answers short. Answer using the knowledge below when relevant; otherwise use conversation context or general knowledge.
+
+{(string.IsNullOrEmpty(knowledgeContext) ? "" : "Knowledge:\n" + knowledgeContext + "\n\n")}{(string.IsNullOrEmpty(memoryContext) ? "" : "Recent conversation:\n" + memoryContext + "\n\n")}User: {text}
+";
+                reply = await _ollama.GenerateAsync(prompt) ?? "";
+                _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
+
+                // Store extracted text + response in DB with vector (for future similarity search)
+                await _memory.Save(new ChatMemory
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    UserText = text,
+                    BotText = reply,
+                    Embedding = embedding,
+                    Timestamp = DateTime.UtcNow
+                });
+                _logger.LogInformation("[Pipeline] Stored in DB (vector memory). userText + botText saved.");
+            }
         }
 
         var audioOut = await _tts.GenerateSpeechAsync(reply);

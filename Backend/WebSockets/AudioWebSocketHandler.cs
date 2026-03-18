@@ -15,6 +15,9 @@ public class AudioWebSocketHandler
 
     public const string EndOfRecordingSignal = "EOR";
 
+    /// <summary>Minimum audio bytes to publish (1 second at 16 kHz 16-bit). Avoids Whisper on fragments.</summary>
+    public const int MinAudioBytes = 32000;
+
     public AudioWebSocketHandler(RabbitMqService rabbit, ConnectionManager manager, ILogger<AudioWebSocketHandler> logger)
     {
         _rabbit = rabbit;
@@ -71,10 +74,10 @@ public class AudioWebSocketHandler
                     if (text.Equals(EndOfRecordingSignal, StringComparison.OrdinalIgnoreCase))
                     {
                         _logger.LogInformation("[WS] EOR received. ClientId={ClientId}, AudioBufferBytes={Bytes}", clientId, audioBuffer.Count);
-                        if (audioBuffer.Count > 0)
+                        if (audioBuffer.Count >= MinAudioBytes)
                         {
                             var payload = audioBuffer.ToArray();
-                            _logger.LogInformation("[WS] About to publish to RabbitMQ. ClientId={ClientId}, PayloadBytes={Bytes}", clientId, payload.Length);
+                            _logger.LogInformation("[WS] About to publish to RabbitMQ. ClientId={ClientId}, PayloadBytes={Bytes} (Whisper → DB + vector)", clientId, payload.Length);
                             try
                             {
                                 _rabbit.Publish(new AudioMessage
@@ -88,6 +91,11 @@ public class AudioWebSocketHandler
                             {
                                 _logger.LogError(ex, "[WS] RabbitMQ Publish failed. ClientId={ClientId}", clientId);
                             }
+                            audioBuffer.Clear();
+                        }
+                        else if (audioBuffer.Count > 0)
+                        {
+                            _logger.LogWarning("[WS] EOR but audio too short ({Bytes} < {Min}). Skipping. ClientId={ClientId}", audioBuffer.Count, MinAudioBytes, clientId);
                             audioBuffer.Clear();
                         }
                         else

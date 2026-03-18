@@ -6,10 +6,17 @@ model = WhisperModel("base", device="cpu", compute_type="int8")
 
 audio_file = sys.argv[1]
 
-segments, _ = model.transcribe(audio_file)
+# language="en" helps get full English sentences; use None for auto-detect
+# Consume all segments so the full transcription is returned (not just first word)
+segments, _ = model.transcribe(audio_file, language="en", vad_filter=True)
 
-result = ""
+parts = []
 for segment in segments:
-    result += segment.text
+    t = (segment.text or "").strip()
+    if t:
+        parts.append(t)
+
+# Full speech-to-text output, joined with spaces (what you said)
+result = " ".join(parts)
 
 print(result)

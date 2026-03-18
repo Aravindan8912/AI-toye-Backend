@@ -63,6 +63,9 @@ builder.Services.AddSingleton<MongoService>();
 // Memory (vector search)
 builder.Services.AddSingleton<IMemoryService, MemoryService>();
 
+// Knowledge (RAG: store docs, search by embedding, feed to Ollama)
+builder.Services.AddSingleton<IKnowledgeService, KnowledgeService>();
+
 // Embedding (Ollama embeddings API)
 builder.Services.AddHttpClient<IEmbeddingService, EmbeddingService>((sp, client) =>
 {
@@ -133,7 +136,10 @@ Directory.CreateDirectory(audioTts);
 
 try
 {
+    var serverHost = app.Configuration["Server:Host"] ?? "0.0.0.0";
+    var serverPort = app.Configuration["Server:Port"] ?? "5000";
     Log.Information("Starting JarvisBackend (Mongo + Vector Ready 🚀)");
+    Log.Information("WebSocket: ws://{Host}:{Port}/ws (Toy/Frontend connect here)", serverHost, serverPort);
     app.Run();
 }
 catch (Exception ex)

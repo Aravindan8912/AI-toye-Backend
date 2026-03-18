@@ -3,10 +3,11 @@ using MongoDB.Driver;
 
 namespace JarvisBackend.Data;
 
-/// <summary>MongoDB connection and collection access for chat memory (and optional vector search).</summary>
+/// <summary>MongoDB connection and collection access for chat memory and knowledge (vector search).</summary>
 public class MongoService
 {
-    private readonly IMongoCollection<ChatMemory> _collection;
+    private readonly IMongoCollection<ChatMemory> _memoryCollection;
+    private readonly IMongoCollection<Knowledge> _knowledgeCollection;
     private readonly ILogger<MongoService> _logger;
 
     public MongoService(IConfiguration config, ILogger<MongoService> logger)
@@ -14,13 +15,16 @@ public class MongoService
         _logger = logger;
         var connectionString = config["MongoDB:ConnectionString"] ?? "mongodb://localhost:27017";
         var databaseName = config["MongoDB:DatabaseName"] ?? "jarvis";
-        var collectionName = config["MongoDB:MemoryCollectionName"] ?? "memory";
+        var memoryName = config["MongoDB:MemoryCollectionName"] ?? "memory";
+        var knowledgeName = config["MongoDB:KnowledgeCollectionName"] ?? "knowledge";
 
         var client = new MongoClient(connectionString);
         var db = client.GetDatabase(databaseName);
-        _collection = db.GetCollection<ChatMemory>(collectionName);
-        _logger.LogInformation("MongoDB: connected to {Database}.{Collection}", databaseName, collectionName);
+        _memoryCollection = db.GetCollection<ChatMemory>(memoryName);
+        _knowledgeCollection = db.GetCollection<Knowledge>(knowledgeName);
+        _logger.LogInformation("MongoDB: connected to {Database}.{Memory}, {Knowledge}", databaseName, memoryName, knowledgeName);
     }
 
-    public IMongoCollection<ChatMemory> Collection => _collection;
+    public IMongoCollection<ChatMemory> Collection => _memoryCollection;
+    public IMongoCollection<Knowledge> KnowledgeCollection => _knowledgeCollection;
 }
