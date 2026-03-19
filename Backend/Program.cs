@@ -1,14 +1,10 @@
-using System.Net.WebSockets;
-using System.Text;
+using System.Threading.Channels;
 using JarvisBackend.Configuration;
+using JarvisBackend.Data;
 using JarvisBackend.Services;
 using JarvisBackend.Services.Interfaces;
-using JarvisBackend.WebSockets;
 using JarvisBackend.Workers;
-using Microsoft.Extensions.Options;
 using Serilog;
-
-using JarvisBackend.Data;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -34,13 +30,16 @@ builder.Services.AddCors(options =>
 builder.Services.AddControllers();
 
 
-// ================= EXISTING =================
+// ================= MQTT → RabbitMQ → Worker (ESP32 flow) =================
 
-// WebSocket → RabbitMQ → Worker
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
+builder.Services.Configure<MqttOptions>(builder.Configuration.GetSection(MqttOptions.SectionName));
+builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
+
 builder.Services.AddSingleton<RabbitMqService>();
-builder.Services.AddSingleton<ConnectionManager>();
-builder.Services.AddSingleton<AudioWebSocketHandler>();
+builder.Services.AddSingleton<RedisService>();
+builder.Services.AddSingleton<IMqttResponsePublisher, MqttResponsePublisher>();
+builder.Services.AddHostedService<MqttListenerService>();
 builder.Services.AddHostedService<AudioWorker>();
 
 builder.Services.AddSingleton<IWhisperService, WhisperService>();
@@ -63,6 +62,19 @@ builder.Services.AddSingleton<MongoService>();
 // Memory (vector search)
 builder.Services.AddSingleton<IMemoryService, MemoryService>();
 
+// Reminder: store conversation turns (ReminderWorker consumes and stores)
+builder.Services.AddSingleton(Channel.CreateUnbounded<ReminderItem>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = false }));
+builder.Services.AddSingleton<ChannelReader<ReminderItem>>(sp => sp.GetRequiredService<Channel<ReminderItem>>().Reader);
+builder.Services.AddSingleton<ChannelWriter<ReminderItem>>(sp => sp.GetRequiredService<Channel<ReminderItem>>().Writer);
+builder.Services.AddSingleton<IReminderService, ReminderService>();
+builder.Services.AddHostedService<ReminderWorker>();
+
+// Profile: user facts (birthday, name) in Redis - better than vector for concrete facts
+builder.Services.AddSingleton<IProfileService, ProfileService>();
+
+// Roles: character roles in MongoDB (name, style, maxLength) for prompt building
+builder.Services.AddSingleton<IRoleService, RoleService>();
+
 // Knowledge (RAG: store docs, search by embedding, feed to Ollama)
 builder.Services.AddSingleton<IKnowledgeService, KnowledgeService>();
 
@@ -82,46 +94,8 @@ app.UseSerilogRequestLogging();
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 
 app.MapControllers();
-
-
-// ================= ROUTES =================
-
-// ❌ Deprecated endpoint
-app.Map("/ws/stream", async context =>
-{
-    context.Response.StatusCode = 400;
-    context.Response.ContentType = "text/plain";
-    await context.Response.WriteAsync("Use /ws instead. Connect to ws://host:5000/ws");
-});
-
-// ✅ Main WebSocket
-app.Map("/ws", async context =>
-{
-    if (!context.WebSockets.IsWebSocketRequest)
-    {
-        context.Response.StatusCode = 400;
-        return;
-    }
-
-    var options = context.RequestServices
-        .GetRequiredService<IOptions<RabbitMqOptions>>().Value;
-
-    if (!options.Enabled)
-    {
-        context.Response.StatusCode = 503;
-        await context.Response.WriteAsync("RabbitMQ disabled");
-        return;
-    }
-
-    var socket = await context.WebSockets.AcceptWebSocketAsync();
-    var handler = context.RequestServices.GetRequiredService<AudioWebSocketHandler>();
-
-    await handler.HandleAsync(socket, context.RequestAborted);
-});
-
 
 // ================= INIT =================
 
@@ -138,8 +112,8 @@ try
 {
     var serverHost = app.Configuration["Server:Host"] ?? "0.0.0.0";
     var serverPort = app.Configuration["Server:Port"] ?? "5000";
-    Log.Information("Starting JarvisBackend (Mongo + Vector Ready 🚀)");
-    Log.Information("WebSocket: ws://{Host}:{Port}/ws (Toy/Frontend connect here)", serverHost, serverPort);
+    Log.Information("Starting JarvisBackend (MQTT + Redis + MongoDB)");
+    Log.Information("ESP32: publish audio to jarvis/{{deviceId}}/audio/in → responses on jarvis/{{deviceId}}/audio/out and .../wav");
     app.Run();
 }
 catch (Exception ex)

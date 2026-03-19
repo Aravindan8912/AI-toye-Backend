@@ -22,11 +22,22 @@ public class OllamaService : IOllamaService
         var model = _config["Ollama:Model"] ?? "llama3";
         _logger.LogInformation("Ollama: generating with model {Model}, prompt length {Length}", model, prompt?.Length ?? 0);
 
+        var numPredict = _config.GetValue("Ollama:NumPredict", 50);
+        var temperature = _config.GetValue("Ollama:Temperature", 0.3);
+        var topK = _config.GetValue("Ollama:TopK", 20);
+        var topP = _config.GetValue("Ollama:TopP", 0.8);
         var request = new
         {
             model,
             prompt = prompt?.Trim() ?? "",
-            stream = false
+            stream = false,
+            options = new
+            {
+                num_predict = numPredict,
+                temperature = temperature,
+                top_k = topK,
+                top_p = topP
+            }
         };
 
         var content = new StringContent(

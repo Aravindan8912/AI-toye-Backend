@@ -87,3 +87,6 @@ D:\Project\Backend\obj\Debug\net8.0\swae.build.ex.cache
 D:\Project\Backend\obj\Debug\net8.0\JarvisBa.F727A843.Up2Date
 D:\Project\Backend\obj\Debug\net8.0\JarvisBackend.genruntimeconfig.cache
 D:\Project\Backend\obj\Debug\net8.0\ref\JarvisBackend.dll
+D:\Project\Backend\bin\Debug\net8.0\MQTTnet.dll
+D:\Project\Backend\bin\Debug\net8.0\Pipelines.Sockets.Unofficial.dll
+D:\Project\Backend\bin\Debug\net8.0\StackExchange.Redis.dll

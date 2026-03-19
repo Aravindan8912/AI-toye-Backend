@@ -8,9 +8,11 @@
     ".NETCoreApp,Version=v8.0": {
       "JarvisBackend/1.0.0": {
         "dependencies": {
+          "MQTTnet": "4.3.4.1084",
           "MongoDB.Driver": "3.7.0",
           "RabbitMQ.Client": "6.8.1",
-          "Serilog.AspNetCore": "8.0.3"
+          "Serilog.AspNetCore": "8.0.3",
+          "StackExchange.Redis": "2.8.16"
         },
         "runtime": {
           "JarvisBackend.dll": {}
@@ -52,6 +54,22 @@
           "lib/net6.0/MongoDB.Driver.dll": {
             "assemblyVersion": "3.7.0.0",
             "fileVersion": "3.7.0.0"
+          }
+        }
+      },
+      "MQTTnet/4.3.4.1084": {
+        "runtime": {
+          "lib/net7.0/MQTTnet.dll": {
+            "assemblyVersion": "4.3.4.1084",
+            "fileVersion": "4.3.4.1084"
+          }
+        }
+      },
+      "Pipelines.Sockets.Unofficial/2.2.8": {
+        "runtime": {
+          "lib/net5.0/Pipelines.Sockets.Unofficial.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "2.2.8.1080"
           }
         }
       },
@@ -183,6 +201,17 @@
           }
         }
       },
+      "StackExchange.Redis/2.8.16": {
+        "dependencies": {
+          "Pipelines.Sockets.Unofficial": "2.2.8"
+        },
+        "runtime": {
+          "lib/net6.0/StackExchange.Redis.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "2.8.16.12844"
+          }
+        }
+      },
       "ZstdSharp.Port/0.7.3": {
         "runtime": {
           "lib/net7.0/ZstdSharp.dll": {
@@ -226,6 +255,20 @@
       "sha512": "sha512-3Xr9Z6GzfewLbPNCtC+9Z8AvU9rtWzPG0Dl7BPYF2MiMxGMsrU/dp2cYOY39yxzOJAye/lWIWYX/lVmyQLQbYQ==",
       "path": "mongodb.driver/3.7.0",
       "hashPath": "mongodb.driver.3.7.0.nupkg.sha512"
+    },
+    "MQTTnet/4.3.4.1084": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ss5w/lZTGfO+m5oALOYKj/HpycDXRLZqbCmBhK7rar2DSVNIGu4MErI0J6UdBxG9pY/O2KfaDE53W9AzvDbbYw==",
+      "path": "mqttnet/4.3.4.1084",
+      "hashPath": "mqttnet.4.3.4.1084.nupkg.sha512"
+    },
+    "Pipelines.Sockets.Unofficial/2.2.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-zG2FApP5zxSx6OcdJQLbZDk2AVlN2BNQD6MorwIfV6gVj0RRxWPEp2LXAxqDGZqeNV1Zp0BNPcNaey/GXmTdvQ==",
+      "path": "pipelines.sockets.unofficial/2.2.8",
+      "hashPath": "pipelines.sockets.unofficial.2.2.8.nupkg.sha512"
     },
     "RabbitMQ.Client/6.8.1": {
       "type": "package",
@@ -310,6 +353,13 @@
       "sha512": "sha512-rFtK2KEI9hIe8gtx3a0YDXdHOpedIf9wYCEYtBEmtlyiWVX3XlCNV03JrmmAi/Cdfn7dxK+k0sjjcLv4fpHnqA==",
       "path": "snappier/1.0.0",
       "hashPath": "snappier.1.0.0.nupkg.sha512"
+    },
+    "StackExchange.Redis/2.8.16": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-WaoulkOqOC9jHepca3JZKFTqndCWab5uYS7qCzmiQDlrTkFaDN7eLSlEfHycBxipRnQY9ppZM7QSsWAwUEGblw==",
+      "path": "stackexchange.redis/2.8.16",
+      "hashPath": "stackexchange.redis.2.8.16.nupkg.sha512"
     },
     "ZstdSharp.Port/0.7.3": {
       "type": "package",

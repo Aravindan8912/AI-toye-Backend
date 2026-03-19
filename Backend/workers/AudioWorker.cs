@@ -1,21 +1,21 @@
-using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using JarvisBackend.Data;
 using JarvisBackend.Models;
 using JarvisBackend.Services;
 using JarvisBackend.Services.Interfaces;
 using JarvisBackend.Utils;
-using JarvisBackend.WebSockets;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
 namespace JarvisBackend.Workers;
 
 /// <summary>
-/// Consumes audio from RabbitMQ and runs STT → LLM → TTS in a background processor.
-/// Uses manual ack so messages show as Unacked in RabbitMQ UI while processing.
-/// Heavy work is offloaded so the consumer thread returns immediately (avoids thread pool starvation).
+/// Consumes audio from RabbitMQ (from MQTT listener) and runs STT → LLM → TTS.
+/// Writes recent memory to Redis (fast) and long-term vector memory to MongoDB.
+/// Sends responses back via MQTT to ESP32.
 /// </summary>
 public class AudioWorker : BackgroundService
 {
@@ -27,7 +27,12 @@ public class AudioWorker : BackgroundService
     private readonly IMemoryService _memory;
     private readonly IKnowledgeService _knowledge;
     private readonly IConfiguration _config;
-    private readonly ConnectionManager _manager;
+    private readonly IMqttResponsePublisher _mqttPublisher;
+    private readonly IReminderService _reminderService;
+    private readonly IProfileService _profileService;
+    private readonly IRoleService _roleService;
+    private readonly ChannelWriter<ReminderItem> _reminderWriter;
+    private readonly RedisService _redis;
     private readonly ILogger<AudioWorker> _logger;
 
     public AudioWorker(
@@ -39,7 +44,12 @@ public class AudioWorker : BackgroundService
         IMemoryService memory,
         IKnowledgeService knowledge,
         IConfiguration config,
-        ConnectionManager manager,
+        IMqttResponsePublisher mqttPublisher,
+        IReminderService reminderService,
+        IProfileService profileService,
+        IRoleService roleService,
+        ChannelWriter<ReminderItem> reminderWriter,
+        RedisService redis,
         ILogger<AudioWorker> logger)
     {
         _rabbit = rabbit;
@@ -50,7 +60,12 @@ public class AudioWorker : BackgroundService
         _memory = memory;
         _knowledge = knowledge;
         _config = config;
-        _manager = manager;
+        _mqttPublisher = mqttPublisher;
+        _reminderService = reminderService;
+        _profileService = profileService;
+        _roleService = roleService;
+        _reminderWriter = reminderWriter;
+        _redis = redis;
         _logger = logger;
     }
 
@@ -165,27 +180,91 @@ public class AudioWorker : BackgroundService
                 reply = "I couldn't hear you properly, please say again.";
             else
             {
-                // Vector: embed user text, search memory + knowledge for context
+                // Store user facts when they say things like "my birthday is X" (reminder-style memory)
+                await TryStoreUserFactsAsync(clientId, text, stoppingToken);
+
                 var embedding = await _embed.GetEmbedding(text);
-                var memories = await _memory.Search(embedding);
-                var knowledgeChunks = await _knowledge.SearchAsync(embedding);
-                var memoryContext = string.Join("\n", memories.Select(m => $"User: {m.UserText}\nBot: {m.BotText}"));
-                var knowledgeContext = knowledgeChunks.Count > 0
-                    ? string.Join("\n\n", knowledgeChunks.Select(k => $"[{k.Title}]\n{k.Content}"))
+
+                // Smart memory: only 2 recent + 1 relevant (vector). Pick only what matters.
+                var recentTask = _memory.GetRecentByClient(clientId, 20);
+                var similarTask = _memory.Search(embedding);
+                var skipKnowledge = text.Length < 20;
+                var knowledgeTask = skipKnowledge ? Task.FromResult(new List<JarvisBackend.Models.Knowledge>()) : _knowledge.SearchAsync(embedding);
+
+                await Task.WhenAll(recentTask, similarTask);
+
+                var recent = (await recentTask).Take(2).ToList();
+                var similar = (await similarTask).Take(1).ToList();
+                var previousBlock = string.Join("\n", recent.Select(m => $"U:{m.UserText}\nB:{m.BotText}"));
+                var relevantBlock = similar.Count > 0 ? $"U:{similar[0].UserText}\nB:{similar[0].BotText}" : "";
+
+                string knowledgeContext = "";
+                if (!skipKnowledge)
+                {
+                    try
+                    {
+                        var knowledgeChunks = await knowledgeTask.WaitAsync(TimeSpan.FromSeconds(3), stoppingToken);
+                        knowledgeContext = knowledgeChunks.Count > 0
+                            ? string.Join("\n\n", knowledgeChunks.Select(k => $"[{k.Title}]\n{k.Content}"))
+                            : "";
+                    }
+                    catch (TimeoutException) { _logger.LogWarning("[Pipeline] Knowledge skipped (timeout 3s)"); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "[Pipeline] Knowledge skipped"); }
+                }
+
+                // User facts from Redis (birthday, name, etc.) - better than vector for concrete facts
+                var profile = await _profileService.GetProfileAsync(clientId, stoppingToken);
+                var userFactsBlock = profile.Count > 0
+                    ? "User facts: " + string.Join(", ", profile.Select(p => $"{p.Key}={p.Value}"))
                     : "";
-                var persona = _config["Assistant:Persona"] ?? "";
-                var userProfile = _config["Assistant:UserProfile"] ?? "";
-                var systemBlock = (string.IsNullOrWhiteSpace(persona) && string.IsNullOrWhiteSpace(userProfile))
-                    ? ""
-                    : string.Join("\n\n", new[] { persona, userProfile }.Where(s => !string.IsNullOrWhiteSpace(s))) + "\n\n";
-                var prompt = $@"{systemBlock}Keep answers short. Answer using the knowledge below when relevant; otherwise use conversation context or general knowledge.
 
-{(string.IsNullOrEmpty(knowledgeContext) ? "" : "Knowledge:\n" + knowledgeContext + "\n\n")}{(string.IsNullOrEmpty(memoryContext) ? "" : "Recent conversation:\n" + memoryContext + "\n\n")}User: {text}
-";
-                reply = await _ollama.GenerateAsync(prompt) ?? "";
-                _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
+                // Role key from Redis (e.g. ironman); fetch full role from DB (name, style, maxLength)
+                var roleKey = await _redis.GetRoleAsync(clientId) ?? "default";
+                var roleData = await _roleService.GetRoleAsync(roleKey, stoppingToken);
 
-                // Store extracted text + response in DB with vector (for future similarity search)
+                var context = new System.Text.StringBuilder();
+                if (!string.IsNullOrEmpty(userFactsBlock)) context.AppendLine(userFactsBlock).AppendLine();
+                if (!string.IsNullOrEmpty(knowledgeContext)) context.AppendLine("Knowledge:").AppendLine(knowledgeContext).AppendLine();
+                context.AppendLine("Previous:").AppendLine(string.IsNullOrEmpty(previousBlock) ? "(none)" : previousBlock).AppendLine();
+                context.AppendLine("Relevant:").AppendLine(string.IsNullOrEmpty(relevantBlock) ? "(none)" : relevantBlock);
+
+                var prompt = PromptBuilder.Build(roleData, text, context.ToString());
+                _logger.LogInformation("[Pipeline] Prompt tokens approx: {Length} (target 200-300 max)", prompt.Length);
+
+                // LLM cache: same question = instant response
+                reply = "";
+                var llmCacheKey = _redis.InstanceName + "llm:" + clientId + ":" + HashText(text);
+                if (_redis.IsEnabled && _redis.LlmCacheTtlMinutes > 0)
+                {
+                    var db = _redis.GetDatabase();
+                    if (db != null)
+                    {
+                        var cached = await db.StringGetAsync(llmCacheKey);
+                        if (cached.HasValue && !cached.IsNullOrEmpty)
+                        {
+                            reply = cached!;
+                            _logger.LogInformation("[Pipeline] LLM: cache hit (instant)");
+                        }
+                    }
+                }
+
+                if (string.IsNullOrEmpty(reply))
+                {
+                    reply = await _ollama.GenerateAsync(prompt) ?? "";
+                    _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
+                    if (_redis.IsEnabled && _redis.LlmCacheTtlMinutes > 0 && !string.IsNullOrEmpty(reply))
+                    {
+                        try
+                        {
+                            var db = _redis.GetDatabase();
+                            if (db != null)
+                                await db.StringSetAsync(llmCacheKey, reply, TimeSpan.FromMinutes(_redis.LlmCacheTtlMinutes));
+                        }
+                        catch { /* ignore */ }
+                    }
+                }
+
+                // MongoDB (long-term vector) + Redis (fast recent)
                 await _memory.Save(new ChatMemory
                 {
                     Id = Guid.NewGuid().ToString(),
@@ -193,8 +272,11 @@ public class AudioWorker : BackgroundService
                     BotText = reply,
                     Embedding = embedding,
                     Timestamp = DateTime.UtcNow
-                });
-                _logger.LogInformation("[Pipeline] Stored in DB (vector memory). userText + botText saved.");
+                }, clientId);
+                _logger.LogInformation("[Pipeline] Stored: MongoDB (vector) + Redis (recent).");
+
+                // Enqueue for ReminderWorker to store so next time AI can refer to this conversation
+                try { await _reminderWriter.WriteAsync(new ReminderItem(clientId, text, reply), stoppingToken); } catch (Exception ex) { _logger.LogDebug(ex, "Reminder enqueue skipped"); }
             }
         }
 
@@ -209,21 +291,53 @@ public class AudioWorker : BackgroundService
         }
 
         var toSend = WavHelper.StripWavHeader(audioOut);
-        var socket = _manager.Get(clientId);
+        var chatPayload = JsonSerializer.Serialize(new { userText = text ?? "", botText = reply ?? "", ttsSampleRate });
+        await _mqttPublisher.PublishAsync(clientId, chatPayload, toSend ?? Array.Empty<byte>(), stoppingToken);
+    }
 
-        if (socket != null && socket.State == WebSocketState.Open)
+    private static string HashText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(text.Trim()));
+        return Convert.ToBase64String(bytes).Replace("+", "-").Replace("/", "_").TrimEnd('=');
+    }
+
+    private async Task TryStoreUserFactsAsync(string clientId, string text, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        var t = text.Trim();
+        try
         {
-            var chatPayload = JsonSerializer.Serialize(new { userText = text ?? "", botText = reply ?? "", ttsSampleRate });
-            await socket.SendAsync(
-                new ArraySegment<byte>(Encoding.UTF8.GetBytes(chatPayload)),
-                WebSocketMessageType.Text,
-                true,
-                CancellationToken.None);
-            await socket.SendAsync(
-                new ArraySegment<byte>(toSend),
-                WebSocketMessageType.Binary,
-                true,
-                CancellationToken.None);
+            if (t.Contains("birthday", StringComparison.OrdinalIgnoreCase))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(t, @"(?:my\s+)?birthday\s+is\s+(.+?)(?:\.|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (m.Success && m.Groups.Count > 1)
+                {
+                    var value = m.Groups[1].Value.Trim();
+                    if (value.Length > 0 && value.Length < 100)
+                        await _profileService.SetAsync(clientId, "birthday", value, cancellationToken);
+                }
+            }
+            if (t.Contains("call me", StringComparison.OrdinalIgnoreCase) || t.Contains("my name is", StringComparison.OrdinalIgnoreCase))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(t, @"(?:call me|my name is)\s+(.+?)(?:\.|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (m.Success && m.Groups.Count > 1)
+                {
+                    var value = m.Groups[1].Value.Trim();
+                    if (value.Length > 0 && value.Length < 80)
+                        await _profileService.SetAsync(clientId, "name", value, cancellationToken);
+                }
+            }
+            if (t.StartsWith("remember", StringComparison.OrdinalIgnoreCase))
+            {
+                var value = t.Substring(8).Trim();
+                if (value.Length > 0 && value.Length < 200)
+                    await _profileService.SetAsync(clientId, "last_topic", value, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Profile fact extraction skipped");
         }
     }
 }

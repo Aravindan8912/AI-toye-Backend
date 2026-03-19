@@ -7,7 +7,7 @@ using RabbitMQ.Client;
 
 namespace JarvisBackend.Services;
 
-/// <summary>Publishes audio messages to RabbitMQ for the WebSocket → RabbitMQ → Worker pipeline.</summary>
+/// <summary>Publishes audio messages to RabbitMQ (from MQTT listener or other publishers) for the AudioWorker pipeline.</summary>
 public class RabbitMqService
 {
     private readonly RabbitMqOptions _options;
@@ -61,7 +61,7 @@ public class RabbitMqService
         }
     }
 
-    /// <summary>Publish an audio message to the configured queue (WebSocket handler calls this).</summary>
+    /// <summary>Publish an audio message to the configured queue (e.g. MqttListenerService calls this).</summary>
     public void Publish(AudioMessage message)
     {
         if (message == null)

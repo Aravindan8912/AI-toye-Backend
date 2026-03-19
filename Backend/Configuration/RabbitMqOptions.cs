@@ -1,6 +1,6 @@
 namespace JarvisBackend.Configuration;
 
-/// <summary>RabbitMQ connection and queue settings for WebSocket → RabbitMQ → Worker flow.</summary>
+/// <summary>RabbitMQ connection and queue settings for MQTT → RabbitMQ → AudioWorker flow.</summary>
 public class RabbitMqOptions
 {
     public const string SectionName = "RabbitMQ";
