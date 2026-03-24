@@ -1,19 +1,24 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using JarvisBackend.Data;
 using JarvisBackend.Services.Interfaces;
 
 namespace JarvisBackend.Services;
 
-/// <summary>Uses Ollama /api/embed to produce vector embeddings for memory search.</summary>
+/// <summary>Uses Ollama /api/embed with Redis cache for fast response (same text = cache hit).</summary>
 public class EmbeddingService : IEmbeddingService
 {
     private readonly HttpClient _http;
     private readonly IConfiguration _config;
+    private readonly RedisService? _redis;
     private readonly ILogger<EmbeddingService> _logger;
 
-    public EmbeddingService(HttpClient http, IConfiguration config, ILogger<EmbeddingService> logger)
+    public EmbeddingService(HttpClient http, IConfiguration config, ILogger<EmbeddingService> logger, RedisService redis)
     {
         _http = http;
         _config = config;
+        _redis = redis;
         _logger = logger;
     }
 
@@ -22,9 +27,35 @@ public class EmbeddingService : IEmbeddingService
         if (string.IsNullOrWhiteSpace(text))
             return Array.Empty<float>();
 
+        var normalized = text.Trim();
+        var cacheKey = _redis?.InstanceName + "embed:" + GetHashKey(normalized);
+
+        // Redis cache for fast response
+        if (_redis?.IsEnabled == true && !string.IsNullOrEmpty(cacheKey))
+        {
+            var db = _redis.GetDatabase();
+            if (db != null)
+            {
+                var cached = await db.StringGetAsync(cacheKey);
+                if (cached.HasValue && !cached.IsNullOrEmpty)
+                {
+                    try
+                    {
+                        var cachedVec = JsonSerializer.Deserialize<float[]>(cached!);
+                        if (cachedVec != null && cachedVec.Length > 0)
+                        {
+                            _logger.LogDebug("Embedding: cache hit, dimensions={Dim}", cachedVec.Length);
+                            return cachedVec;
+                        }
+                    }
+                    catch { /* fall through to Ollama */ }
+                }
+            }
+        }
+
         var model = _config["Ollama:EmbeddingModel"] ?? "nomic-embed-text";
-        var body = JsonSerializer.Serialize(new { model, input = text.Trim() });
-        var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+        var body = JsonSerializer.Serialize(new { model, input = normalized });
+        var content = new StringContent(body, Encoding.UTF8, "application/json");
 
         var res = await _http.PostAsync("/api/embed", content);
         res.EnsureSuccessStatusCode();
@@ -40,6 +71,32 @@ public class EmbeddingService : IEmbeddingService
             list.Add((float)e.GetDouble());
         var vec = list.ToArray();
         _logger.LogDebug("Embedding: model={Model}, dimensions={Dim}", model, vec.Length);
+
+        // Store in Redis for fast response next time
+        if (_redis?.IsEnabled == true && !string.IsNullOrEmpty(cacheKey) && vec.Length > 0)
+        {
+            try
+            {
+                var db = _redis.GetDatabase();
+                if (db != null)
+                {
+                    var ttl = _redis.EmbeddingCacheTtlSeconds > 0 ? TimeSpan.FromSeconds(_redis.EmbeddingCacheTtlSeconds) : (TimeSpan?)null;
+                    await db.StringSetAsync(cacheKey, JsonSerializer.Serialize(vec), ttl);
+                    _logger.LogDebug("Embedding: cached for {Ttl}s", _redis.EmbeddingCacheTtlSeconds);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Embedding: cache set failed");
+            }
+        }
+
         return vec;
+    }
+
+    private static string GetHashKey(string text)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(text));
+        return Convert.ToBase64String(bytes).Replace("+", "-").Replace("/", "_").TrimEnd('=');
     }
 }

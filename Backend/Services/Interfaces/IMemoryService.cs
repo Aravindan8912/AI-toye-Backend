@@ -4,7 +4,10 @@ namespace JarvisBackend.Services.Interfaces;
 
 public interface IMemoryService
 {
-    Task<List<ChatMemory>> Search(float[]? embedding);
-    Task Save(ChatMemory memory);
+    /// <param name="clientId">When set, only memories for this client are considered (privacy + relevant recall).</param>
+    Task<List<ChatMemory>> Search(float[]? embedding, string? clientId = null);
+    Task Save(ChatMemory memory, string? clientId = null);
     Task<List<ChatMemory>> GetRecent(int limit = 50);
+    /// <summary>Fast recent memory from Redis (per device/session). Returns empty if Redis disabled.</summary>
+    Task<List<ChatMemory>> GetRecentByClient(string? clientId, int limit = 20);
 }

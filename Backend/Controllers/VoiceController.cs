@@ -11,14 +11,16 @@ public class VoiceController : ControllerBase
     private readonly IOllamaService _ollama;
     private readonly ITtsService _tts;
     private readonly IVoicePipelineLogger _pipelineLog;
+    private readonly IConfiguration _config;
     private readonly ILogger<VoiceController> _logger;
 
-    public VoiceController(IWhisperService whisper, IOllamaService ollama, ITtsService tts, IVoicePipelineLogger pipelineLog, ILogger<VoiceController> logger)
+    public VoiceController(IWhisperService whisper, IOllamaService ollama, ITtsService tts, IVoicePipelineLogger pipelineLog, IConfiguration config, ILogger<VoiceController> logger)
     {
         _whisper = whisper;
         _ollama = ollama;
         _tts = tts;
         _pipelineLog = pipelineLog;
+        _config = config;
         _logger = logger;
     }
 
@@ -59,7 +61,12 @@ public class VoiceController : ControllerBase
         _pipelineLog.LogWhisperResponse(userText, path);
 
         // 🧠 2. LLM
-        var prompt = $"You are a helpful assistant. Keep answers short.\nUser: {userText ?? ""}";
+        var persona = _config["Assistant:Persona"] ?? "";
+        var userProfile = _config["Assistant:UserProfile"] ?? "";
+        var systemBlock = (string.IsNullOrWhiteSpace(persona) && string.IsNullOrWhiteSpace(userProfile))
+            ? ""
+            : string.Join("\n\n", new[] { persona, userProfile }.Where(s => !string.IsNullOrWhiteSpace(s))) + "\n\n";
+        var prompt = $"{systemBlock}Keep answers short.\nUser: {userText ?? ""}";
         string responseText;
         try
         {

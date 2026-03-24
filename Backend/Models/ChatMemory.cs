@@ -21,4 +21,8 @@ public class ChatMemory
 
     [BsonElement("timestamp")]
     public DateTime Timestamp { get; set; }
+
+    /// <summary>WebSocket/MQTT client id or API session id; used to load prior turns for this user only.</summary>
+    [BsonElement("clientId")]
+    public string? ClientId { get; set; }
 }
