@@ -49,15 +49,24 @@ public class RabbitMqService
             var factory = CreateFactory();
             _connection = factory.CreateConnection();
             _channel = _connection.CreateModel();
+            _channel.ExchangeDeclare(
+                exchange: _options.ExchangeName,
+                type: ExchangeType.Direct,
+                durable: false,
+                autoDelete: false);
             _channel.QueueDeclare(
                 queue: _options.QueueName,
                 durable: false,
                 exclusive: false,
                 autoDelete: false
             );
+            _channel.QueueBind(
+                queue: _options.QueueName,
+                exchange: _options.ExchangeName,
+                routingKey: _options.RoutingKey);
             _logger?.LogInformation(
-                "RabbitMQ connected to {HostName}:{Port}, queue: {QueueName}",
-                _options.HostName, _options.Port, _options.QueueName);
+                "RabbitMQ connected to {HostName}:{Port}, exchange: {ExchangeName}, queue: {QueueName}, routingKey: {RoutingKey}",
+                _options.HostName, _options.Port, _options.ExchangeName, _options.QueueName, _options.RoutingKey);
         }
     }
 
@@ -72,8 +81,10 @@ public class RabbitMqService
         var audioBytes = message.AudioData?.Length ?? 0;
         EnsureConnected();
         var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
-        _channel!.BasicPublish(exchange: "", routingKey: _options.QueueName, body: body);
-        _logger?.LogInformation("RabbitMQ: message published to {QueueName}, bodySize={BodySize}, audioBytes={AudioBytes}", _options.QueueName, body.Length, audioBytes);
+        _channel!.BasicPublish(exchange: _options.ExchangeName, routingKey: _options.RoutingKey, body: body);
+        _logger?.LogInformation(
+            "RabbitMQ: message published to exchange={ExchangeName}, routingKey={RoutingKey}, queue={QueueName}, bodySize={BodySize}, audioBytes={AudioBytes}",
+            _options.ExchangeName, _options.RoutingKey, _options.QueueName, body.Length, audioBytes);
     }
 
     /// <summary>Returns the channel for consuming, or null if RabbitMQ is not available or disabled.</summary>

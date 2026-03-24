@@ -94,7 +94,33 @@ public class AudioWorker : BackgroundService
             ulong tag = ea.DeliveryTag;
             try
             {
-                var message = JsonSerializer.Deserialize<AudioMessage>(Encoding.UTF8.GetString(body));
+                var json = Encoding.UTF8.GetString(body).Trim();
+                if (json.Length == 0)
+                {
+                    _logger.LogWarning(
+                        "AudioWorker: RabbitMQ message has empty body (deliveryTag={Tag}). Acking — purge stale/non-JSON messages from queue {Queue}.",
+                        tag, _rabbit.QueueName);
+                    channel.BasicAck(tag, false);
+                    return;
+                }
+
+                AudioMessage? message;
+                try
+                {
+                    message = JsonSerializer.Deserialize<AudioMessage>(json);
+                }
+                catch (JsonException jex)
+                {
+                    _logger.LogWarning(
+                        jex,
+                        "AudioWorker: RabbitMQ body is not valid JSON (deliveryTag={Tag}, bytes={Bytes}). Preview: {Preview}. Acking to drop poison message.",
+                        tag,
+                        body.Length,
+                        json.Length <= 200 ? json : json[..200] + "…");
+                    channel.BasicAck(tag, false);
+                    return;
+                }
+
                 if (message?.AudioData == null || message.AudioData.Length == 0)
                 {
                     channel.BasicAck(tag, false);
@@ -104,6 +130,17 @@ public class AudioWorker : BackgroundService
                 var path = Path.Combine(Path.GetTempPath(), $"audio_{Guid.NewGuid()}.wav");
                 var wavBytes = WavHelper.EnsureWav(message.AudioData);
                 await File.WriteAllBytesAsync(path, wavBytes, stoppingToken);
+
+                var (sampleCount, peakAbs, rms, nearSilenceFrac) = PcmLevelDiagnostics.AnalyzeRawOrWavPcm(message.AudioData);
+                _logger.LogInformation(
+                    "[Pipeline] Mic PCM check: samples={Samples}, peakAbs={Peak}, rms={Rms:F1}, nearSilence={NearSilence:P0}",
+                    sampleCount, peakAbs, rms, nearSilenceFrac);
+                if (sampleCount > 0 && peakAbs < 400 && rms < 80)
+                    _logger.LogWarning(
+                        "[Pipeline] PCM looks very quiet (likely silence or dead mic path on ESP32). Check I2S pins, MIC_SAMPLE_SHIFT / MIC_DIGITAL_GAIN, try I2S_COMM_FORMAT_STAND_MSB or ONLY_RIGHT.");
+                if (sampleCount > 0 && nearSilenceFrac > 0.92 && peakAbs < 2000)
+                    _logger.LogWarning(
+                        "[Pipeline] PCM is mostly near-zero samples — recording may be silent or gain too low.");
 
                 // Enqueue and return immediately — message stays Unacked until processor finishes
                 await workChannel.Writer.WriteAsync((path, message.ClientId ?? "", tag), stoppingToken);
@@ -185,31 +222,54 @@ public class AudioWorker : BackgroundService
 
                 var embedding = await _embed.GetEmbedding(text);
 
-                // Smart memory: only 2 recent + 1 relevant (vector). Pick only what matters.
-                var recentTask = _memory.GetRecentByClient(clientId, 20);
-                var similarTask = _memory.Search(embedding);
-                var skipKnowledge = text.Length < 20;
-                var knowledgeTask = skipKnowledge ? Task.FromResult(new List<JarvisBackend.Models.Knowledge>()) : _knowledge.SearchAsync(embedding);
+                // RAG: same rules as POST /api/knowledge/ask (threshold + SearchLimit + MaxContextChars).
+                // MinUserTextCharsForRag: 0 = never skip by length (old code skipped when text.Length < 20, e.g. "Spider-Man Enemie").
+                var minCharsForRag = _config.GetValue("Knowledge:MinUserTextCharsForRag", 0);
+                var skipKnowledge = string.IsNullOrWhiteSpace(text)
+                    || (minCharsForRag > 0 && text.Trim().Length < minCharsForRag);
 
-                await Task.WhenAll(recentTask, similarTask);
+                var recentTurns = _config.GetValue("Memory:RecentTurnsInPrompt", 12);
+                var similarTurns = _config.GetValue("Memory:SimilarTurnsInPrompt", 3);
+                var recentFetch = Math.Max(recentTurns + 5, 25);
 
-                var recent = (await recentTask).Take(2).ToList();
-                var similar = (await similarTask).Take(1).ToList();
+                var recentTask = _memory.GetRecentByClient(clientId, recentFetch);
+                var similarTask = _memory.Search(embedding, clientId);
+                Task<(string Context, int ChunkCount)>? knowledgeTask = skipKnowledge
+                    ? null
+                    : _knowledge.BuildKnowledgeContextForQueryAsync(text, embedding, stoppingToken);
+
+                await Task.WhenAll(
+                    recentTask,
+                    similarTask,
+                    knowledgeTask ?? Task.FromResult(("", 0)));
+
+                var recent = (await recentTask).TakeLast(recentTurns).ToList();
+                var similar = (await similarTask).Take(similarTurns).ToList();
                 var previousBlock = string.Join("\n", recent.Select(m => $"U:{m.UserText}\nB:{m.BotText}"));
-                var relevantBlock = similar.Count > 0 ? $"U:{similar[0].UserText}\nB:{similar[0].BotText}" : "";
+                var relevantBlock = similar.Count > 0
+                    ? string.Join("\n\n", similar.Select(m => $"U:{m.UserText}\nB:{m.BotText}"))
+                    : "";
 
                 string knowledgeContext = "";
-                if (!skipKnowledge)
+                if (knowledgeTask != null)
                 {
                     try
                     {
-                        var knowledgeChunks = await knowledgeTask.WaitAsync(TimeSpan.FromSeconds(3), stoppingToken);
-                        knowledgeContext = knowledgeChunks.Count > 0
-                            ? string.Join("\n\n", knowledgeChunks.Select(k => $"[{k.Title}]\n{k.Content}"))
-                            : "";
+                        var (ctx, chunkCount) = await knowledgeTask;
+                        knowledgeContext = ctx;
+                        if (chunkCount > 0)
+                            _logger.LogInformation("[Pipeline] Knowledge RAG applied: {ChunkCount} chunk(s)", chunkCount);
+                        else
+                            _logger.LogInformation("[Pipeline] Knowledge RAG: no chunk above SimilarityThreshold (see Knowledge:SimilarityThreshold)");
                     }
-                    catch (TimeoutException) { _logger.LogWarning("[Pipeline] Knowledge skipped (timeout 3s)"); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "[Pipeline] Knowledge skipped"); }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[Pipeline] Knowledge RAG failed");
+                    }
+                }
+                else if (minCharsForRag > 0)
+                {
+                    _logger.LogDebug("[Pipeline] Knowledge RAG skipped (transcript shorter than MinUserTextCharsForRag={Min})", minCharsForRag);
                 }
 
                 // User facts from Redis (birthday, name, etc.) - better than vector for concrete facts
@@ -225,11 +285,11 @@ public class AudioWorker : BackgroundService
                 var context = new System.Text.StringBuilder();
                 if (!string.IsNullOrEmpty(userFactsBlock)) context.AppendLine(userFactsBlock).AppendLine();
                 if (!string.IsNullOrEmpty(knowledgeContext)) context.AppendLine("Knowledge:").AppendLine(knowledgeContext).AppendLine();
-                context.AppendLine("Previous:").AppendLine(string.IsNullOrEmpty(previousBlock) ? "(none)" : previousBlock).AppendLine();
-                context.AppendLine("Relevant:").AppendLine(string.IsNullOrEmpty(relevantBlock) ? "(none)" : relevantBlock);
+                context.AppendLine("Previous (earlier in this session — use when the user asks what they said before or refers to past messages):").AppendLine(string.IsNullOrEmpty(previousBlock) ? "(none)" : previousBlock).AppendLine();
+                context.AppendLine("Relevant (similar past turns):").AppendLine(string.IsNullOrEmpty(relevantBlock) ? "(none)" : relevantBlock);
 
                 var prompt = PromptBuilder.Build(roleData, text, context.ToString());
-                _logger.LogInformation("[Pipeline] Prompt tokens approx: {Length} (target 200-300 max)", prompt.Length);
+                _logger.LogInformation("[Pipeline] Prompt length: {Chars} chars (voice: trim Knowledge/Memory in appsettings if too slow)", prompt.Length);
 
                 // LLM cache: same question = instant response
                 reply = "";
@@ -250,8 +310,23 @@ public class AudioWorker : BackgroundService
 
                 if (string.IsNullOrEmpty(reply))
                 {
-                    reply = await _ollama.GenerateAsync(prompt) ?? "";
-                    _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
+                    try
+                    {
+                        reply = await _ollama.GenerateAsync(prompt) ?? "";
+                        _logger.LogInformation("[Pipeline] LLM: {Reply}", reply);
+                    }
+                    catch (TaskCanceledException ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "[Pipeline] Ollama request timed out or was canceled (large prompt / slow model). Increase Ollama:RequestTimeoutSeconds or reduce Knowledge/Memory context.");
+                        reply = "Sorry, that took too long. Try a shorter question, or reduce knowledge chunks in appsettings.";
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        _logger.LogWarning(ex, "[Pipeline] Ollama canceled.");
+                        reply = "Sorry, the AI request was canceled. Please try again.";
+                    }
+
                     if (_redis.IsEnabled && _redis.LlmCacheTtlMinutes > 0 && !string.IsNullOrEmpty(reply))
                     {
                         try
@@ -271,7 +346,8 @@ public class AudioWorker : BackgroundService
                     UserText = text,
                     BotText = reply,
                     Embedding = embedding,
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.UtcNow,
+                    ClientId = clientId
                 }, clientId);
                 _logger.LogInformation("[Pipeline] Stored: MongoDB (vector) + Redis (recent).");
 

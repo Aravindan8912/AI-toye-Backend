@@ -24,7 +24,7 @@ No local record-then-play loop; all audio goes to the Jarvis backend.
 
 ## Config (before upload)
 
-Edit in `Toy_Jarvis.ino` or use build flags:
+Edit in `Toy.ino` or use build flags:
 
 ```cpp
 #define WIFI_SSID "YOUR_SSID"

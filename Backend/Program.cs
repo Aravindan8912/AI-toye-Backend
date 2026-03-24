@@ -48,6 +48,10 @@ builder.Services.AddHttpClient<IOllamaService, OllamaService>((sp, client) =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
     client.BaseAddress = new Uri(config["Ollama:BaseUrl"] ?? "http://localhost:11434");
+    // Default HttpClient timeout is 100s; large RAG prompts + CPU models (e.g. phi3) often need longer.
+    var timeoutSec = config.GetValue("Ollama:RequestTimeoutSeconds", 600);
+    if (timeoutSec > 0)
+        client.Timeout = TimeSpan.FromSeconds(timeoutSec);
 });
 
 builder.Services.AddSingleton<ITtsService, PiperTtsService>();

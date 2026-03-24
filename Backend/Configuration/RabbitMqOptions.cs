@@ -23,6 +23,12 @@ public class RabbitMqOptions
     /// <summary>Queue name for audio messages (default: audio_queue).</summary>
     public string QueueName { get; set; } = "audio_queue";
 
+    /// <summary>Exchange used for publishing/consuming messages (default: audio_exchange).</summary>
+    public string ExchangeName { get; set; } = "audio_exchange";
+
+    /// <summary>Routing key used to bind queue and publish messages (default: audio.incoming).</summary>
+    public string RoutingKey { get; set; } = "audio.incoming";
+
     /// <summary>When true, the /ws endpoint and AudioWorker are enabled (default: true).</summary>
     public bool Enabled { get; set; } = true;
 }

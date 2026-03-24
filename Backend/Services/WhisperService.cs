@@ -28,9 +28,23 @@ public class WhisperService : IWhisperService
         var python = OperatingSystem.IsWindows() ? "python" : "python3";
         var command = $"{python} \"{scriptPath}\" \"{absoluteAudioPath}\"";
 
-        var result = await ProcessHelper.RunProcess(command);
+        var (stdout, stderr, exitCode) = await ProcessHelper.RunProcessWithDetailsAsync(command);
+        if (exitCode != 0)
+        {
+            _logger.LogError("Whisper: python exit {ExitCode}. stderr: {Stderr}", exitCode, stderr.Trim());
+            return "";
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            if (string.IsNullOrWhiteSpace(stdout.Trim()))
+                _logger.LogWarning("Whisper: empty transcript, stderr: {Stderr}", stderr.Trim());
+            else
+                _logger.LogDebug("Whisper stderr: {Stderr}", stderr.Trim());
+        }
+
         // Full Whisper output — no truncation; stored as userText in MongoDB
-        var text = result.Trim();
+        var text = stdout.Trim();
         _logger.LogInformation("Whisper: done, result length {Length}, text: {Preview}", text.Length, text.Length > 0 ? (text.Length > 80 ? text.Substring(0, 80) + "…" : text) : "(empty)");
         return text;
     }

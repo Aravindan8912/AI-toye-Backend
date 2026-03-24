@@ -10,6 +10,12 @@ namespace JarvisBackend.Services;
 /// <summary>Publishes chat JSON and TTS WAV to MQTT topics for ESP32 (jarvis/{clientId}/audio/out and .../wav).</summary>
 public class MqttResponsePublisher : IMqttResponsePublisher
 {
+    /// <summary>
+    /// ESP32 PubSubClient uses a uint16_t buffer; build flag MQTT_MAX_PACKET_SIZE=65535 is typical.
+    /// One MQTT PUBLISH must fit topic + payload + headers — keep PCM under this cap or the device never receives audio.
+    /// </summary>
+    private const int MaxTtsPcmPayloadBytes = 62_000;
+
     private readonly MqttOptions _options;
     private readonly ILogger<MqttResponsePublisher> _logger;
     private IMqttClient? _client;
@@ -70,9 +76,18 @@ public class MqttResponsePublisher : IMqttResponsePublisher
 
             if (ttsAudioBytes != null && ttsAudioBytes.Length > 0)
             {
+                var pcm = ttsAudioBytes;
+                if (pcm.Length > MaxTtsPcmPayloadBytes)
+                {
+                    _logger.LogWarning(
+                        "TTS PCM {Bytes} bytes exceeds MQTT single-message limit for ESP32 PubSubClient ({MaxBytes} bytes). Keeping first {MaxBytes} bytes (start of phrase).",
+                        pcm.Length, MaxTtsPcmPayloadBytes);
+                    pcm = pcm.AsSpan(0, MaxTtsPcmPayloadBytes).ToArray();
+                }
+
                 await client.PublishAsync(new MqttApplicationMessageBuilder()
                     .WithTopic(topicWav)
-                    .WithPayload(ttsAudioBytes)
+                    .WithPayload(pcm)
                     .WithRetainFlag(false)
                     .Build(), cancellationToken);
             }

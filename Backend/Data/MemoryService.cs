@@ -38,13 +38,17 @@ public class MemoryService : IMemoryService
         return denom == 0 ? 0 : dot / denom;
     }
 
-    public async Task<List<ChatMemory>> Search(float[]? query)
+    public async Task<List<ChatMemory>> Search(float[]? query, string? clientId = null)
     {
         if (query == null || query.Length == 0)
             return new List<ChatMemory>();
 
         var limit = _config.GetValue("Memory:SearchLimit", 5);
-        var all = await _mongo.Collection.Find(_ => true).ToListAsync();
+        var filter = string.IsNullOrEmpty(clientId)
+            ? Builders<ChatMemory>.Filter.Empty
+            : Builders<ChatMemory>.Filter.Eq(x => x.ClientId, clientId);
+
+        var all = await _mongo.Collection.Find(filter).ToListAsync();
 
         var results = all
             .Where(x => x.Embedding != null && x.Embedding.Length == query.Length)
@@ -54,7 +58,7 @@ public class MemoryService : IMemoryService
             .Select(x => x.Data)
             .ToList();
 
-        _logger.LogDebug("Memory search: {Count} results (limit {Limit})", results.Count, limit);
+        _logger.LogDebug("Memory search: {Count} results (limit {Limit}, client {ClientId})", results.Count, limit, clientId ?? "(any)");
         return results;
     }
 
@@ -64,6 +68,8 @@ public class MemoryService : IMemoryService
             return;
         memory.Id ??= Guid.NewGuid().ToString();
         memory.Timestamp = memory.Timestamp == default ? DateTime.UtcNow : memory.Timestamp;
+        if (!string.IsNullOrEmpty(clientId))
+            memory.ClientId = clientId;
         await _mongo.Collection.InsertOneAsync(memory);
         _logger.LogDebug("Memory saved to MongoDB: {Id}", memory.Id);
 
@@ -92,32 +98,46 @@ public class MemoryService : IMemoryService
 
     public async Task<List<ChatMemory>> GetRecentByClient(string? clientId, int limit = 20)
     {
-        if (string.IsNullOrEmpty(clientId) || _redis?.IsEnabled != true)
+        if (string.IsNullOrEmpty(clientId))
             return new List<ChatMemory>();
 
-        var db = _redis.GetDatabase();
-        if (db == null)
-            return new List<ChatMemory>();
-
-        var key = _redis.InstanceName + "recent:" + clientId;
-        var values = await db.ListRangeAsync(key, -limit, -1);
-        var list = new List<ChatMemory>();
-        foreach (var v in values)
+        if (_redis?.IsEnabled == true)
         {
-            if (v.IsNullOrEmpty) continue;
-            try
+            var db = _redis.GetDatabase();
+            if (db != null)
             {
-                var o = JsonSerializer.Deserialize<JsonElement>(v!);
-                list.Add(new ChatMemory
+                var key = _redis.InstanceName + "recent:" + clientId;
+                var values = await db.ListRangeAsync(key, -limit, -1);
+                var list = new List<ChatMemory>();
+                foreach (var v in values)
                 {
-                    Id = o.TryGetProperty("id", out var id) ? id.GetString() : null,
-                    UserText = o.TryGetProperty("userText", out var u) ? u.GetString() : null,
-                    BotText = o.TryGetProperty("botText", out var b) ? b.GetString() : null,
-                    Timestamp = o.TryGetProperty("timestamp", out var t) ? DateTime.Parse(t.GetString()!) : default
-                });
+                    if (v.IsNullOrEmpty) continue;
+                    try
+                    {
+                        var o = JsonSerializer.Deserialize<JsonElement>(v!);
+                        list.Add(new ChatMemory
+                        {
+                            Id = o.TryGetProperty("id", out var id) ? id.GetString() : null,
+                            UserText = o.TryGetProperty("userText", out var u) ? u.GetString() : null,
+                            BotText = o.TryGetProperty("botText", out var b) ? b.GetString() : null,
+                            Timestamp = o.TryGetProperty("timestamp", out var t) ? DateTime.Parse(t.GetString()!) : default,
+                            ClientId = clientId
+                        });
+                    }
+                    catch { /* skip malformed */ }
+                }
+
+                if (list.Count > 0)
+                    return list;
             }
-            catch { /* skip malformed */ }
         }
-        return list;
+
+        var mongoRecent = await _mongo.Collection
+            .Find(x => x.ClientId == clientId)
+            .SortByDescending(x => x.Timestamp)
+            .Limit(limit)
+            .ToListAsync();
+        mongoRecent.Reverse();
+        return mongoRecent;
     }
 }
